@@ -1,14 +1,9 @@
 @echo off
-
-::::::::::::::::::::::::::::::::::::::::::::
-:: Automatically check & get admin rights V2
-::::::::::::::::::::::::::::::::::::::::::::
-@echo off
-CLS
-ECHO.
-ECHO =============================
-ECHO Running Admin shell
-ECHO =============================
+REM GameTCP3 - Admin Launcher
+REM Copyright (c) 2022 Charles McDonald. BSD 3-Clause License. See LICENSE.md.
+echo =============================
+echo Running Admin shell
+echo =============================
 
 :init
 setlocal DisableDelayedExpansion
@@ -23,32 +18,43 @@ if '%errorlevel%' == '0' ( goto gotPrivileges ) else ( goto getPrivileges )
 
 :getPrivileges
 if '%1'=='ELEV' (echo ELEV & shift /1 & goto gotPrivileges)
-ECHO.
-ECHO **************************************
-ECHO Invoking UAC for Privilege Escalation
-ECHO **************************************
+echo.
+echo **************************************
+echo Invoking UAC for Privilege Escalation
+echo **************************************
 
-ECHO Set UAC = CreateObject^("Shell.Application"^) > "%vbsGetPrivileges%"
-ECHO args = "ELEV " >> "%vbsGetPrivileges%"
-ECHO For Each strArg in WScript.Arguments >> "%vbsGetPrivileges%"
-ECHO args = args ^& strArg ^& " "  >> "%vbsGetPrivileges%"
-ECHO Next >> "%vbsGetPrivileges%"
-ECHO UAC.ShellExecute "!batchPath!", args, "", "runas", 1 >> "%vbsGetPrivileges%"
+echo Set UAC = CreateObject^("Shell.Application"^) > "%vbsGetPrivileges%"
+echo args = "ELEV " >> "%vbsGetPrivileges%"
+echo For Each strArg in WScript.Arguments >> "%vbsGetPrivileges%"
+echo args = args ^& strArg ^& " "  >> "%vbsGetPrivileges%"
+echo Next >> "%vbsGetPrivileges%"
+echo UAC.ShellExecute "!batchPath!", args, "", "runas", 1 >> "%vbsGetPrivileges%"
 "%SystemRoot%\System32\WScript.exe" "%vbsGetPrivileges%" %*
-exit /B
+if exist "%vbsGetPrivileges%" del "%vbsGetPrivileges%" 1>nul 2>nul
+exit /B 1
 
 :gotPrivileges
 setlocal & pushd .
-cd /d %~dp0
+cd /d "%~dp0"
 if '%1'=='ELEV' (del "%vbsGetPrivileges%" 1>nul 2>nul  &  shift /1)
 
-::::::::::::::::::::::::::::
-::START
-::::::::::::::::::::::::::::
-REM Run shell as admin (example) - put here code as you like
-ECHO %batchName% Arguments: %1 %2 %3 %4 %5 %6 %7 %8 %9
-:cmd /k cd C:\Users\Bored\Desktop\GameTCP\GameTCP.exe
+echo =============================
+echo GameSet - GameTCP3 Launcher
+echo =============================
 
-C:\Users\Bored\Desktop\GameTCP\GameTCP.exe
+if exist "GameTCP3.exe" (
+    GameTCP3.exe
+    set exitCode=!errorlevel!
+    if !exitCode! neq 0 (
+        echo.
+        echo WARNING: GameTCP3.exe exited with error code !exitCode!.
+    )
+) else (
+    echo ERROR: GameTCP3.exe not found in %cd%
+    echo Please compile it first using Create.bat
+    set exitCode=1
+)
+
+if exist "%vbsGetPrivileges%" del "%vbsGetPrivileges%" 1>nul 2>nul
 pause
-exit
+exit /B !exitCode!
