@@ -12,6 +12,29 @@ The tweak set itself belongs to upstream. It was transcribed from `GameTCP3.vb`
 at upstream version **3.0.0**, and upstream's own history is summarised near the
 bottom so the two toolkits can be compared and merged later.
 
+## [4.2.0] - 2026-11-15
+
+Version bump for the per-value current readings and the refresh action. The tweak
+set, the target values and the reset commands are unchanged from 4.1.0.
+
+### Added
+
+- Every row in the section tree shows what the value is set to right now. The
+  per-interface areas (`interfaces`, `netbt-interfaces`) read every interface
+  through the engine's recursive scan, collapse identical values and report the
+  interface count, for example `TcpAckFrequency = 2 x3  (3 interfaces) -> 1`.
+  Previously only the fixed sections showed a current value.
+- **Refresh Values** in the GUI, also on **F5**: re-reads all 106 values and
+  rewrites the tree without applying, previewing or scanning first. It only
+  reads, so it works without elevation, and it is disabled while an operation is
+  running.
+
+### Changed
+
+- Current values are read once per refresh through `ScanSections` and rewritten
+  after an apply, preview, restore or scan, so the labels match what the registry
+  holds at that moment.
+
 ## [4.1.0] - 2026-11-13
 
 Version bump for the updated download package. The toolkit, tweak set and

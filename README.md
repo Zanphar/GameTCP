@@ -4,7 +4,7 @@ A self-contained native C++ (Win32) reimplementation of the **GameTCP3** Windows
 network optimization toolkit, with both a **CLI** and a **GUI** in a single
 dependency-free `GamerTCP.exe`.
 
-The current release is **4.1.0** (2026-11-13) — the fourth generation of the
+The current release is **4.2.0** (2026-11-15) — the fourth generation of the
 tool, following GameTCP3. See [`CHANGES.md`](CHANGES.md) for the full history and
 for how upstream changes are tracked.
 
@@ -126,8 +126,10 @@ Run `GamerTCP.exe` with no arguments (or `GamerTCP.exe --gui`).
   the saved rectangle is no longer visible.
 * Every area is expandable: it lists each registry value it writes with the
   current value next to the target (for example `DefaultTTL = 255 -> 64`), and
-  refreshes those values after an apply or a scan. Hover a value for its
-  one-line meaning.
+  refreshes those values after an apply, a restore, a scan or a refresh. The
+  per-interface sections show every distinct current value with its interface
+  count, for example `TcpAckFrequency = 2 x3  (3 interfaces) -> 1`. Hover a value
+  for its one-line meaning.
 * Tick individual values, or click a section's checkbox to tick/uncheck its whole
   list (`Select All` / `Select None` cover everything). A section's box shows
   ticked only when all of its values are ticked.
@@ -136,6 +138,9 @@ Run `GamerTCP.exe` with no arguments (or `GamerTCP.exe --gui`).
   them, then resets the network stack — with a confirmation first.
 * **Preview (dry run)** shows exactly which values would change without writing.
 * **Scan Current State** prints current values next to their targets.
+* **Refresh Values** (F5) re-reads every value, including the per-interface ones,
+  and rewrites the tree, so the current values can be inspected at any time
+  without applying or scanning first.
 * **Backup… / Restore…** use file dialogs and the same backup format as the CLI.
 * **Reset Network Stack** and **Teredo…** wrap the `netsh` operations.
 * **About…** shows the version, copyright and the full BSD 3-Clause licence text.

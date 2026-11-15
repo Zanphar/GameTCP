@@ -61,6 +61,7 @@ enum ControlId {
     ID_APPLY,
     ID_PREVIEW,
     ID_SCAN,
+    ID_REFRESH,
     ID_RESET,
     ID_BACKUP,
     ID_RESTORE,
@@ -80,7 +81,7 @@ enum LogKind { LOG_DEFAULT = 0, LOG_OK = 1, LOG_WARN = 2, LOG_ERROR = 3, LOG_DET
 const UINT kLogMessage = WM_APP + 1;
 const UINT kDoneMessage = WM_APP + 2;
 
-const int kButtonCount = 10;
+const int kButtonCount = 11;
 
 HWND g_window = nullptr;
 HWND g_tree = nullptr;
@@ -756,6 +757,7 @@ void UpdateControls() {
     EnableControl(ID_TEREDO, canWrite);
     EnableControl(ID_PREVIEW, !g_busy);
     EnableControl(ID_SCAN, !g_busy);
+    EnableControl(ID_REFRESH, !g_busy);
     EnableControl(ID_BACKUP, !g_busy);
     EnableControl(ID_CLEAR, !g_busy);
     EnableControl(ID_SELECT_ALL, !g_busy);
@@ -993,21 +995,70 @@ HWND CreateButton(int id, const wchar_t* text) {
     return button;
 }
 
-// Tree rows show the value as it is now next to the target it would be set to,
-// e.g. "DefaultTTL = 255 -> 64". Per-interface sections have one value per
-// interface rather than a single current value, so they keep showing the target.
-std::wstring LeafLabel(const Section& section, const Tweak& tweak) {
-    std::wstring text = std::wstring(tweak.name) + L" = ";
-    if (section.mode == SectionMode::Fixed) {
-        text += ReadValue(tweak.root, tweak.path, tweak.name).Display();
-        text += L" -> ";
+// Tree rows show what every value holds right now next to the target it would
+// be set to, e.g. "DefaultTTL = 255 -> 64". The values are read through the
+// engine, which also walks the per-interface keys, so the recursive sections
+// report every interface instead of only their target.
+struct ValueSnapshot {
+    std::vector<std::pair<std::wstring, int>> distinct;  // current text, instances
+    int instances = 0;
+};
+
+std::map<const Tweak*, ValueSnapshot> g_valueSnapshots;
+
+// Reads every value of every section, including one row per network interface.
+void ReadCurrentValues() {
+    g_valueSnapshots.clear();
+    std::vector<ScanRow> rows;
+    ScanSections(AllSections(), rows);
+    for (const ScanRow& row : rows) {
+        if (!row.tweak) continue;  // section-level failure, already reported
+        ValueSnapshot& snapshot = g_valueSnapshots[row.tweak];
+        ++snapshot.instances;
+        bool seen = false;
+        for (auto& item : snapshot.distinct) {
+            if (item.first == row.current) {
+                ++item.second;
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) snapshot.distinct.emplace_back(row.current, 1);
     }
-    text += TweakText(tweak);
+}
+
+std::wstring CurrentTextFor(const Section& section, const Tweak& tweak) {
+    const auto found = g_valueSnapshots.find(&tweak);
+    if (found == g_valueSnapshots.end())
+        return ReadValue(tweak.root, tweak.path, tweak.name).Display();
+
+    const ValueSnapshot& snapshot = found->second;
+    if (snapshot.instances == 0) return L"(not set)";
+
+    std::wstring text;
+    for (size_t i = 0; i < snapshot.distinct.size(); ++i) {
+        if (i > 0) text += L", ";
+        text += snapshot.distinct[i].first;
+        if (snapshot.distinct.size() > 1)
+            text += L" x" + std::to_wstring(snapshot.distinct[i].second);
+    }
+    if (section.mode != SectionMode::Fixed) {
+        text += L"  (" + std::to_wstring(snapshot.instances) +
+                (snapshot.instances == 1 ? L" interface)" : L" interfaces)");
+    }
     return text;
 }
 
+std::wstring LeafLabel(const Section& section, const Tweak& tweak) {
+    return std::wstring(tweak.name) + L" = " + CurrentTextFor(section, tweak) + L" -> " +
+           TweakText(tweak);
+}
+
+// Re-reads every value and rewrites the labels, so the tree is current after an
+// apply, a restore, a scan or a manual refresh.
 void RefreshTreeValues() {
     if (!g_tree) return;
+    ReadCurrentValues();
     for (HTREEITEM sectionItem = TreeView_GetRoot(g_tree); sectionItem;
          sectionItem = TreeView_GetNextSibling(g_tree, sectionItem)) {
         const NodeInfo* sectionNode = ItemInfo(sectionItem);
@@ -1111,6 +1162,7 @@ void CreateControls(HWND window) {
                                TVS_SHOWSELALWAYS | TVS_CHECKBOXES | TVS_INFOTIP | WS_TABSTOP,
                            ID_SECTIONS);
     SendMessageW(g_tree, WM_SETFONT, reinterpret_cast<WPARAM>(g_fontUi), TRUE);
+    ReadCurrentValues();
     PopulateTree();
 
     LoadLibraryW(L"Msftedit.dll");
@@ -1141,13 +1193,14 @@ void CreateControls(HWND window) {
     g_buttons[0] = CreateButton(ID_APPLY, L"Apply Selected");
     g_buttons[1] = CreateButton(ID_PREVIEW, L"Preview (dry run)");
     g_buttons[2] = CreateButton(ID_SCAN, L"Scan Current State");
-    g_buttons[3] = CreateButton(ID_BACKUP, L"Backup...");
-    g_buttons[4] = CreateButton(ID_RESTORE, L"Restore...");
-    g_buttons[5] = CreateButton(ID_RESET, L"Reset Network Stack");
-    g_buttons[6] = CreateButton(ID_TEREDO, L"Teredo...");
-    g_buttons[7] = CreateButton(ID_SELECT_ALL, L"Select All");
-    g_buttons[8] = CreateButton(ID_SELECT_NONE, L"Select None");
-    g_buttons[9] = CreateButton(ID_CLEAR, L"Clear Log");
+    g_buttons[3] = CreateButton(ID_REFRESH, L"Refresh Values");
+    g_buttons[4] = CreateButton(ID_BACKUP, L"Backup...");
+    g_buttons[5] = CreateButton(ID_RESTORE, L"Restore...");
+    g_buttons[6] = CreateButton(ID_RESET, L"Reset Network Stack");
+    g_buttons[7] = CreateButton(ID_TEREDO, L"Teredo...");
+    g_buttons[8] = CreateButton(ID_SELECT_ALL, L"Select All");
+    g_buttons[9] = CreateButton(ID_SELECT_NONE, L"Select None");
+    g_buttons[10] = CreateButton(ID_CLEAR, L"Clear Log");
 
     if (g_sections.empty()) g_sections = AllSections();
 
@@ -1337,6 +1390,18 @@ void DoScan() {
 
     RefreshTreeValues();
     UpdatePerformanceMeter();
+}
+
+// Re-reads every value and repaints the tree, so the current values can be seen
+// at any time without applying, previewing or scanning first.
+void DoRefresh() {
+    if (g_busy) return;
+    RefreshTreeValues();
+    UpdatePerformanceMeter();
+    UpdateStatus(L"values refreshed");
+    AppendLog(L"Refreshed the current value of all " + std::to_wstring(TotalValueCount()) +
+                  L" values.",
+              LOG_DETAIL);
 }
 
 bool ChooseBackupPath(std::wstring* path) {
@@ -2449,6 +2514,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 case ID_SETTINGS: ShowAppearance(); return 0;
                 case ID_POWER: ShowPowerPlans(); return 0;
                 case ID_SCAN: DoScan(); return 0;
+                case ID_REFRESH: DoRefresh(); return 0;
                 case ID_RESET: BeginReset(); return 0;
                 case ID_BACKUP: BeginBackup(); return 0;
                 case ID_RESTORE: BeginRestore(); return 0;
@@ -2643,13 +2709,23 @@ int RunGui(HINSTANCE instance, int showCommand) {
                              : (showCommand == SW_SHOWDEFAULT ? SW_SHOWNORMAL : showCommand));
     UpdateWindow(g_window);
 
+    // F5 re-reads every value. The accelerator is translated before
+    // IsDialogMessageW so it works whatever control has the focus.
+    ACCEL refreshKey{};
+    refreshKey.fVirt = FVIRTKEY;
+    refreshKey.key = VK_F5;
+    refreshKey.cmd = ID_REFRESH;
+    HACCEL accelerators = CreateAcceleratorTableW(&refreshKey, 1);
+
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (accelerators && TranslateAcceleratorW(g_window, accelerators, &message)) continue;
         if (!IsDialogMessageW(g_window, &message)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }
+    if (accelerators) DestroyAcceleratorTable(accelerators);
     return static_cast<int>(message.wParam);
 }
 

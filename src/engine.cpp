@@ -657,7 +657,7 @@ bool WriteAllBytes(const std::wstring& file, const std::string& bytes) {
 
 // ------------------------------------------------------------- metadata
 
-const wchar_t* VersionString() { return L"4.1.0"; }
+const wchar_t* VersionString() { return L"4.2.0"; }
 
 const wchar_t* CopyrightString() {
     return L"BSD 3-Clause. Tweak set derived from GameTCP3 "
