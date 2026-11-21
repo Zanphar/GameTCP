@@ -1,6 +1,0 @@
-// Standalone manifest resource used by the MinGW build. build.bat compiles this
-// to default-manifest.o, which is the manifest object GCC's startfile spec
-// expects; that keeps the executable to exactly one manifest.
-#include <windows.h>
-
-1 24 "gamerTCP.manifest"
