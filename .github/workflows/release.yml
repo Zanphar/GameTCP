@@ -1,0 +1,64 @@
+name: Release
+
+# Pushing a version tag such as v4.2.0 builds both executables on Windows with
+# the project's own build.bat / dist.bat, then publishes the same four files
+# dist.bat produces as a GitHub release.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+
+      # dist.bat takes the version from the newest release heading in CHANGES.md
+      # and selftest compares it with the compiled version, so a tag that does
+      # not match the changelog would publish a mislabelled release.
+      - name: Check the tag matches CHANGES.md
+        shell: pwsh
+        run: |
+          $heading = Select-String -Path CHANGES.md -Pattern '^## \[([0-9]+\.[0-9]+\.[0-9]+)\]' |
+            Select-Object -First 1
+          if (-not $heading) { throw 'No "## [x.y.z]" release heading found in CHANGES.md.' }
+          $version = $heading.Matches[0].Groups[1].Value
+          $tag = '${{ github.ref_name }}'.TrimStart('v')
+          if ($version -ne $tag) {
+            throw "Tag $tag does not match the newest CHANGES.md release $version."
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Prefers MSVC through vswhere, which is present on the GitHub runner; the
+      # MinGW fallback is only used on machines without the C++ tools.
+      - name: Build GamerTCP.exe
+        shell: cmd
+        run: build.bat
+
+      - name: Self test
+        shell: cmd
+        run: GamerTCP.exe selftest
+
+      # Builds GamerTCP-Setup.exe, then the source zip, portable zip, setup
+      # executable and SHA256SUMS file in dist\.
+      - name: Package
+        shell: cmd
+        run: dist.bat
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: GamerTCP ${{ env.VERSION }}
+          files: |
+            dist/GamerTCP-${{ env.VERSION }}-source.zip
+            dist/GamerTCP-${{ env.VERSION }}-portable.zip
+            dist/GamerTCP-${{ env.VERSION }}-setup.exe
+            dist/GamerTCP-${{ env.VERSION }}-SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: true
