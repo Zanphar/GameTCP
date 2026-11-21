@@ -1262,13 +1262,18 @@ void BeginApply(bool dryRun, bool performanceSetup = false) {
                   L"Every recommended value is selected (" +
                       std::to_wstring(picked.size()) + L" values across " +
                       std::to_wstring(sections.size()) +
-                      L" sections). A backup is written first, then the TCP/IP stack is reset "
-                      L"with netsh, which can interrupt the network for a few seconds.\r\n\r\n"
+                      L" sections). A backup is written first, then the global TCP settings "
+                      L"are re-applied and the values are written. The destructive stack "
+                      L"reset (netsh int ip reset and neighbours) is not part of this: it "
+                      L"discards interface keys and static IP configuration, so it only "
+                      L"runs from Reset Network Stack.\r\n\r\n"
                       L"A reboot is recommended; Restore... with the backup undoes the setup."
                 : L"Apply " + std::to_wstring(picked.size()) + L" selected value(s) from " +
                       std::to_wstring(sections.size()) + L" section(s)?\r\n\r\n"
-                      L"A backup of every current value is written first, then the TCP/IP stack "
-                      L"is reset with netsh, which can interrupt the network for a few seconds."
+                      L"A backup of every current value is written first, then the global TCP "
+                      L"settings are re-applied and the values are written. The destructive "
+                      L"stack reset is not run; Reset Network Stack does that separately, "
+                      L"because it discards interface keys and static IP configuration."
                       L"\r\n\r\nA reboot is recommended afterwards.";
         const wchar_t* title = performanceSetup ? L"ZGT Performance Setup" : L"Apply network tweaks";
         if (MessageBoxW(g_window, question.c_str(), title,
@@ -1297,36 +1302,15 @@ void BeginApply(bool dryRun, bool performanceSetup = false) {
             }
         }
 
-        ApplyOptions options;
-        options.dryRun = dryRun;
-        options.filter = filter;
-
-        int changed = 0;
-        int unchanged = 0;
-        int failed = 0;
-
-        for (const Section* section : sections) {
-            PostLog(LOG_HEADING, std::wstring(L"[") + section->name + L"]");
-            const Summary summary = ApplySections({section}, options, [&](const Entry& entry) {
-                if (entry.state == State::Changed) {
-                    PostLog(LOG_OK, EntryLine(entry) + (dryRun ? L"   (would set)" : L""));
-                } else if (entry.state == State::Failed) {
-                    PostLog(LOG_ERROR, L"FAILED " + EntryLine(entry) + L" - " + entry.error);
-                }
-            });
-            changed += summary.changed;
-            unchanged += summary.unchanged;
-            failed += summary.failed;
-            PostLog(LOG_DETAIL, L"  " + std::to_wstring(summary.changed) + L" changed, " +
-                                    std::to_wstring(summary.unchanged) + L" unchanged, " +
-                                    std::to_wstring(summary.failed) + L" failed");
-        }
-
+        // Only the non-destructive part of the netsh set runs here: the global
+        // TCP parameters and the cache flushes. netsh int ip reset (and its tcp,
+        // ipv4, ipv6 and winsock neighbours) is equivalent to removing and
+        // reinstalling TCP/IP and deletes the per-interface keys, so it stays
+        // behind Reset Network Stack and never rides along with an apply.
         if (!dryRun) {
-            PostLog(LOG_DEFAULT, L"");
-            PostLog(LOG_HEADING, L"Resetting the network stack");
-            const CommandSummary reset = RunCommands(
-                ResetStackCommands(), false, [](const CommandResult& result) {
+            PostLog(LOG_HEADING, L"Applying the global TCP settings");
+            const CommandSummary tune = RunCommands(
+                TuneCommands(), false, [](const CommandResult& result) {
                     if (result.ok) {
                         PostLog(LOG_DETAIL, L"  OK    " + result.command);
                     } else {
@@ -1336,10 +1320,74 @@ void BeginApply(bool dryRun, bool performanceSetup = false) {
                                                     : L" - " + FirstLine(result.output)));
                     }
                 });
-            PostLog(reset.failed > 0 ? LOG_WARN : LOG_OK,
-                    L"Network stack reset: " + std::to_wstring(reset.succeeded) +
-                        L" succeeded, " + std::to_wstring(reset.failed) + L" failed.");
+            PostLog(tune.failed > 0 ? LOG_WARN : LOG_OK,
+                    L"Global TCP settings: " + std::to_wstring(tune.succeeded) +
+                        L" succeeded, " + std::to_wstring(tune.failed) + L" failed.");
+            PostLog(LOG_DETAIL,
+                    L"Network stack reset skipped: it discards interface keys and static IP "
+                    L"configuration, so only Reset Network Stack runs it.");
+            PostLog(LOG_DEFAULT, L"");
         }
+
+        ApplyOptions options;
+        options.dryRun = dryRun;
+        options.filter = filter;
+
+        // Collect the entries instead of logging them as they happen: every
+        // written value is read back once all of them have been applied, so a
+        // later step that silently undoes a write is reported as a failure
+        // rather than a change.
+        std::vector<Entry> entries;
+        for (const Section* section : sections) {
+            ApplySections({section}, options,
+                          [&](const Entry& entry) { entries.push_back(entry); });
+        }
+
+        if (!dryRun) {
+            const int reverted = VerifyEntries(entries);
+            if (reverted > 0) {
+                PostLog(LOG_ERROR, L"Verification: " + std::to_wstring(reverted) +
+                                       L" value(s) did not keep the value that was written.");
+            }
+        }
+
+        int changed = 0;
+        int unchanged = 0;
+        int failed = 0;
+        int sectionChanged = 0;
+        int sectionUnchanged = 0;
+        int sectionFailed = 0;
+        std::wstring lastSection;
+        auto flushSection = [&]() {
+            if (lastSection.empty()) return;
+            PostLog(LOG_DETAIL, L"  " + std::to_wstring(sectionChanged) + L" changed, " +
+                                    std::to_wstring(sectionUnchanged) + L" unchanged, " +
+                                    std::to_wstring(sectionFailed) + L" failed");
+        };
+
+        for (const Entry& entry : entries) {
+            if (entry.section != lastSection) {
+                flushSection();
+                lastSection = entry.section;
+                sectionChanged = 0;
+                sectionUnchanged = 0;
+                sectionFailed = 0;
+                PostLog(LOG_HEADING, std::wstring(L"[") + entry.section + L"]");
+            }
+            if (entry.state == State::Changed) {
+                ++changed;
+                ++sectionChanged;
+                PostLog(LOG_OK, EntryLine(entry) + (dryRun ? L"   (would set)" : L""));
+            } else if (entry.state == State::Failed) {
+                ++failed;
+                ++sectionFailed;
+                PostLog(LOG_ERROR, L"FAILED " + EntryLine(entry) + L" - " + entry.error);
+            } else {
+                ++unchanged;
+                ++sectionUnchanged;
+            }
+        }
+        flushSection();
 
         PostLog(LOG_DEFAULT, L"");
         PostLog(failed > 0 ? LOG_WARN : LOG_OK,
@@ -1539,8 +1587,12 @@ void BeginReset() {
     if (g_busy || !g_elevated) return;
     if (MessageBoxW(g_window,
                     L"Reset the TCP/IP stack and Winsock catalog?\r\n\r\n"
-                    L"Existing network connections will drop for a few seconds and a reboot is "
-                    L"recommended afterwards.",
+                    L"This is the destructive reset: netsh int ip reset is equivalent to "
+                    L"removing and reinstalling TCP/IP. It deletes the per-interface keys, so "
+                    L"static addresses, DHCP options and per-interface tweaks are lost and the "
+                    L"connection may have to be set up again. Connections drop for a few "
+                    L"seconds and a reboot is required.\r\n\r\n"
+                    L"No registry values are applied here; use Apply Selected for those.",
                     L"Reset network stack", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
         return;
     }

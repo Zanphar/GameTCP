@@ -306,6 +306,7 @@ struct Options {
     std::wstring              file;
     bool                      dryRun = false;
     bool                      noReset = false;
+    bool                      withReset = false;
     bool                      noBackup = false;
     bool                      yes = false;
     bool                      allValues = false;
@@ -335,6 +336,8 @@ bool ParseOptions(const std::vector<std::wstring>& args, size_t start, Options& 
             options.dryRun = true;
         } else if (arg == L"--no-reset") {
             options.noReset = true;
+        } else if (arg == L"--with-reset") {
+            options.withReset = true;
         } else if (arg == L"--no-backup") {
             options.noBackup = true;
         } else if (arg == L"--all" || arg == L"--all-values") {
@@ -387,13 +390,14 @@ int UnknownSectionError(const std::wstring& id) {
 
 // ------------------------------------------------------------- commands
 
-CommandSummary RunReset(bool dryRun) {
+CommandSummary RunCommandList(const std::vector<std::wstring>& commands, bool dryRun,
+                              const std::wstring& title, const std::wstring& label) {
     SetColor(Color::White);
-    Line(dryRun ? L"Network stack reset (preview):" : L"Resetting network stack...");
+    Line(title);
     SetColor(Color::Default);
 
     const CommandSummary summary =
-        RunCommands(ResetStackCommands(), dryRun, [](const CommandResult& result) {
+        RunCommands(commands, dryRun, [](const CommandResult& result) {
             if (result.ok) {
                 SetColor(Color::Gray);
                 Line(L"  OK    " + result.command);
@@ -410,10 +414,27 @@ CommandSummary RunReset(bool dryRun) {
 
     Line();
     SetColor(summary.failed > 0 ? Color::Yellow : Color::Green);
-    Line(L"Network stack reset: " + std::to_wstring(summary.succeeded) + L" succeeded, " +
+    Line(label + L": " + std::to_wstring(summary.succeeded) + L" succeeded, " +
          std::to_wstring(summary.failed) + L" failed.");
     SetColor(Color::Default);
     return summary;
+}
+
+// The 23-command reset, including the destructive parts. Only the explicit reset
+// command and apply --with-reset reach this.
+CommandSummary RunReset(bool dryRun) {
+    return RunCommandList(ResetStackCommands(), dryRun,
+                          dryRun ? L"Network stack reset (preview):"
+                                 : L"Resetting network stack...",
+                          L"Network stack reset");
+}
+
+// The global TCP settings only: no interface keys, no IP configuration.
+CommandSummary RunTune(bool dryRun) {
+    return RunCommandList(TuneCommands(), dryRun,
+                          dryRun ? L"Global TCP settings (preview):"
+                                 : L"Applying the global TCP settings...",
+                          L"Global TCP settings");
 }
 
 int CommandApply(const Options& options, bool preview) {
@@ -424,6 +445,8 @@ int CommandApply(const Options& options, bool preview) {
         return UsageError(L"unexpected argument: " + options.positional[0]);
 
     const bool dryRun = preview || options.dryRun;
+    if (options.withReset && options.noReset)
+        return UsageError(L"--with-reset and --no-reset cannot be combined");
     if (!dryRun && !IsElevated()) return ElevationError();
 
     Banner(preview ? L"(preview - nothing will be written)"
@@ -434,8 +457,13 @@ int CommandApply(const Options& options, bool preview) {
     if (!dryRun) {
         if (!options.yes) {
             const std::wstring question =
-                L"Apply " + std::to_wstring(sections.size()) + L" section(s), reset the network " +
-                L"stack and write the registry values?";
+                options.withReset
+                    ? L"Reset the network stack (this discards interface keys and static "
+                      L"IP configuration) and apply " +
+                          std::to_wstring(sections.size()) + L" section(s) of registry values?"
+                    : L"Apply " + std::to_wstring(sections.size()) +
+                          L" section(s) of registry values? The global TCP settings are "
+                          L"re-applied; the destructive stack reset is not run.";
             if (!Confirm(question)) {
                 Line(L"Cancelled.");
                 return 0;
@@ -456,36 +484,67 @@ int CommandApply(const Options& options, bool preview) {
         }
     }
 
+    // The destructive stack reset is opt-in (--with-reset): it is equivalent to
+    // removing and reinstalling TCP/IP, so it throws away interface keys, static
+    // addresses and DHCP settings. When it is asked for it runs the full original
+    // set, resets first and global settings second, before the writes.
+    CommandSummary reset;
+    CommandSummary tune;
+    if (!dryRun && options.withReset) {
+        reset = RunReset(false);
+        Line();
+    } else if (!dryRun) {
+        ColoredLine(Color::Gray,
+                    options.noReset
+                        ? L"No netsh commands run (--no-reset)."
+                        : L"Network stack reset skipped: it discards interface and static IP "
+                          L"configuration. Use \"GamerTCP reset\" or --with-reset for it.");
+        Line();
+
+        // The global TCP settings are safe: they set parameters and flush caches
+        // without removing any configuration.
+        if (!options.noReset) {
+            tune = RunTune(false);
+            Line();
+        }
+    }
+
     ApplyOptions applyOptions;
     applyOptions.dryRun = dryRun;
 
-    Summary total;
+    // Collect first, then verify: every value that was written is read back, so
+    // one that does not stick is reported as a failure and never as a change.
+    std::vector<Entry> entries;
     for (const Section* section : sections) {
-        SetColor(Color::White);
-        Line(L"[" + std::wstring(section->name) + L"]");
-        SetColor(Color::Default);
+        ApplySections({section}, applyOptions,
+                      [&](const Entry& entry) { entries.push_back(entry); });
+    }
 
-        const Summary summary = ApplySections({section}, applyOptions, [](const Entry& entry) {
-            PrintEntry(entry);
-        });
-        total.changed += summary.changed;
-        total.unchanged += summary.unchanged;
-        total.failed += summary.failed;
+    if (!dryRun) {
+        const int reverted = VerifyEntries(entries);
+        if (reverted > 0) {
+            ColoredLine(Color::Red, L"Verification: " + std::to_wstring(reverted) +
+                                        L" value(s) did not keep the value that was written.");
+        }
+    }
+
+    Summary total;
+    std::wstring lastSection;
+    for (const Entry& entry : entries) {
+        if (entry.section != lastSection) {
+            SetColor(Color::White);
+            Line(L"[" + entry.section + L"]");
+            SetColor(Color::Default);
+            lastSection = entry.section;
+        }
+        PrintEntry(entry);
+        total.Add(entry);
     }
 
     PrintSummary(total);
 
-    CommandSummary reset;
-    if (!dryRun && !options.noReset) {
-        Line();
-        reset = RunReset(false);
-    } else if (!dryRun && options.noReset) {
-        Line();
-        ColoredLine(Color::Gray, L"Network stack reset skipped (--no-reset).");
-    }
-
     if (!dryRun) PrintRebootNotice();
-    return (total.failed > 0 || reset.failed > 0) ? 2 : 0;
+    return (total.failed > 0 || reset.failed > 0 || tune.failed > 0) ? 2 : 0;
 }
 
 int CommandStatus(const Options& options) {
@@ -833,6 +892,13 @@ int CommandSelfTest() {
           L"SplitList()");
 
     check(ResetStackCommands().size() == 23, L"reset commands: expected 23");
+    check(StackResetCommands().size() == 5, L"destructive reset commands: expected 5");
+    check(TuneCommands().size() == 18, L"global TCP commands: expected 18");
+    bool tuneIsSafe = true;
+    for (const std::wstring& command : TuneCommands()) {
+        if (Lower(command).find(L" reset") != std::wstring::npos) tuneIsSafe = false;
+    }
+    check(tuneIsSafe, L"apply never runs one of the reset commands");
     int teredoCount = 0;
     TeredoOptions(&teredoCount);
     check(teredoCount == 3, L"Teredo options: expected 3");
@@ -861,6 +927,8 @@ int CommandSelfTest() {
 
     const CommandSummary dry = RunCommands(ResetStackCommands(), true, CommandSink());
     check(dry.succeeded == 23 && dry.failed == 0, L"reset command dry run");
+    const CommandSummary dryTune = RunCommands(TuneCommands(), true, CommandSink());
+    check(dryTune.succeeded == 18 && dryTune.failed == 0, L"global TCP command dry run");
 
     const OldValue product =
         ReadValue(Root::LocalMachine, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
@@ -958,13 +1026,13 @@ void PrintHelp() {
     Line(L"  GamerTCP <command> [options]");
     Line();
     Line(L"Commands:");
-    Line(L"  apply      Apply the registry tweaks and reset the network stack");
+    Line(L"  apply      Apply the registry tweaks after the global TCP settings");
     Line(L"  preview    Show what apply would change without writing anything");
     Line(L"  status     Show current values against their targets");
     Line(L"  list       List every section and registry value in the toolkit");
     Line(L"  backup     Save current values to a backup file");
     Line(L"  restore    Restore values from a backup file");
-    Line(L"  reset      Reset the TCP/IP stack and Winsock catalog with netsh");
+    Line(L"  reset      Reset the TCP/IP stack and Winsock catalog (destructive)");
     Line(L"  teredo     Show or change the Teredo tunneling state");
     Line(L"  selftest   Run built-in self checks (read only)");
     Line();
@@ -972,7 +1040,9 @@ void PrintHelp() {
     Line(L"  -s, --section <id>[,<id>]  Limit to these sections (repeatable)");
     Line(L"  -y, --yes                  Do not prompt for confirmation");
     Line(L"  -n, --dry-run              Preview without writing (apply, reset)");
-    Line(L"      --no-reset             Skip the network stack reset");
+    Line(L"      --no-reset             Skip the global TCP settings as well");
+    Line(L"      --with-reset           Also reset the TCP/IP stack first; that discards");
+    Line(L"                             interface keys and static IP configuration");
     Line(L"      --no-backup            Skip the automatic backup");
     Line(L"      --all-values           status: also show values that already match");
     Line(L"  -o, --backup-file <path>   Backup destination");

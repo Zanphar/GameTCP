@@ -368,12 +368,22 @@ const Section kSections[] = {
       SectionMode::Fixed, kMisc, static_cast<int>(sizeof(kMisc) / sizeof(kMisc[0])), true },
 };
 
-const std::vector<std::wstring> kResetCommands = {
+// Destructive commands. Microsoft documents netsh int ip reset as equivalent to
+// removing and reinstalling TCP/IP: it overwrites Tcpip\Parameters and deletes
+// the per-interface keys, which throws away static addresses, DHCP options and
+// every per-interface tweak. The Winsock reset rebuilds the catalog. They are
+// run only by the explicit reset action, never by an ordinary apply.
+const std::vector<std::wstring> kStackResetCommands = {
     L"netsh int tcp reset",
     L"netsh int ipv4 reset",
     L"netsh int ipv6 reset",
     L"netsh int ip reset",
     L"netsh winsock reset catalog",
+};
+
+// Non-destructive commands: they set global TCP parameters and flush caches
+// without removing configuration, so an apply can run them on its own.
+const std::vector<std::wstring> kTuneCommands = {
     L"netsh int ip delete neighbors",
     L"netsh Int tcp set global nonsackrttresiliency=disabled",
     L"netsh Int tcp set global chimney=disabled",
@@ -511,6 +521,9 @@ Entry MakeEntry(const Section& section, const Target& target, const OldValue& ol
     entry.sub = target.sub;
     entry.path = DisplayPath(target.root, target.path);
     entry.name = target.tweak->name;
+    entry.root = target.root;
+    entry.regPath = target.path;
+    entry.tweak = target.tweak;
     entry.oldData = old.Display();
     entry.newData = TargetText(*target.tweak);
     return entry;
@@ -657,7 +670,7 @@ bool WriteAllBytes(const std::wstring& file, const std::string& bytes) {
 
 // ------------------------------------------------------------- metadata
 
-const wchar_t* VersionString() { return L"4.2.0"; }
+const wchar_t* VersionString() { return L"4.2.1"; }
 
 const wchar_t* CopyrightString() {
     return L"BSD 3-Clause. Tweak set derived from GameTCP3 "
@@ -877,6 +890,22 @@ Summary ApplySections(const std::vector<const Section*>& sections, const ApplyOp
         }
     }
     return summary;
+}
+
+int VerifyEntries(std::vector<Entry>& entries) {
+    int reverted = 0;
+    for (Entry& entry : entries) {
+        if (entry.state != State::Changed || !entry.tweak) continue;
+        const OldValue now = ReadValue(entry.root, entry.regPath, entry.name);
+        if (Matches(now, *entry.tweak)) continue;
+        entry.state = State::Failed;
+        entry.error = now.exists
+                          ? L"written but reads back " + now.Display() + L" (target " +
+                                TargetText(*entry.tweak) + L")"
+                          : L"written but the value is gone again";
+        ++reverted;
+    }
+    return reverted;
 }
 
 Summary ScanSections(const std::vector<const Section*>& sections, std::vector<ScanRow>& rows,
@@ -1144,7 +1173,18 @@ bool RestoreBackup(const std::wstring& file, const EntrySink& sink, Summary* sum
 
 // ------------------------------------------------------------- commands
 
-const std::vector<std::wstring>& ResetStackCommands() { return kResetCommands; }
+const std::vector<std::wstring>& StackResetCommands() { return kStackResetCommands; }
+
+const std::vector<std::wstring>& TuneCommands() { return kTuneCommands; }
+
+const std::vector<std::wstring>& ResetStackCommands() {
+    static const std::vector<std::wstring> all = [] {
+        std::vector<std::wstring> commands = kStackResetCommands;
+        commands.insert(commands.end(), kTuneCommands.begin(), kTuneCommands.end());
+        return commands;
+    }();
+    return all;
+}
 
 bool RunAndCapture(const std::wstring& commandLine, std::wstring* output, DWORD* exitCode) {
     SECURITY_ATTRIBUTES attributes{};

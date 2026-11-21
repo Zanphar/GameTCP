@@ -99,6 +99,9 @@ struct Entry {
     std::wstring sub;      // interface GUID, for per-interface sections
     std::wstring path;     // full display path
     std::wstring name;
+    Root         root = Root::LocalMachine;  // where to read the value back
+    std::wstring regPath;                    // key path, without the hive
+    const Tweak* tweak = nullptr;            // target to verify the value against
     std::wstring oldData;
     std::wstring newData;
     std::wstring error;
@@ -124,6 +127,13 @@ struct ApplyOptions {
 Summary ApplySections(const std::vector<const Section*>& sections,
                       const ApplyOptions& options,
                       const EntrySink& sink);
+
+// Reads every entry that was written back from the registry and turns the ones
+// that no longer hold their target into failures, so a step that reverts the
+// registry (a later netsh reset, a service, a policy) cannot be reported as a
+// successful change. Entries that failed, were unchanged or were deleted are
+// left alone, and dry runs are not checked. Returns how many did not stick.
+int VerifyEntries(std::vector<Entry>& entries);
 
 struct ScanRow {
     std::wstring  section;
@@ -183,7 +193,16 @@ struct CommandSummary {
 
 using CommandSink = std::function<void(const CommandResult&)>;
 
+// All 23 commands, in reset order: the destructive resets first, then the global
+// TCP settings. Used by the explicit "Reset Network Stack" action / GamerTCP reset.
 const std::vector<std::wstring>& ResetStackCommands();
+
+// The destructive subset (tcp/ipv4/ipv6/ip reset, winsock reset catalog).
+const std::vector<std::wstring>& StackResetCommands();
+
+// The non-destructive subset: global TCP parameters and cache flushes. An apply
+// runs only these, because the resets discard interface keys and IP config.
+const std::vector<std::wstring>& TuneCommands();
 
 CommandSummary RunCommands(const std::vector<std::wstring>& commands, bool dryRun,
                            const CommandSink& sink);

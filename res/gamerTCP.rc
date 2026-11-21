@@ -14,8 +14,8 @@ IDI_APP_ICON ICON "gamerTCP.ico"
 #endif
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 4,2,0,0
- PRODUCTVERSION 4,2,0,0
+ FILEVERSION 4,2,1,0
+ PRODUCTVERSION 4,2,1,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS VOS_NT_WINDOWS32
@@ -28,11 +28,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "GamerTCP"
             VALUE "FileDescription", "GamerTCP 4 - Windows 10/11 network optimization toolkit"
-            VALUE "FileVersion", "4.2.0.0"
+            VALUE "FileVersion", "4.2.1.0"
             VALUE "InternalName", "GamerTCP"
             VALUE "OriginalFilename", "GamerTCP.exe"
             VALUE "ProductName", "GamerTCP 4"
-            VALUE "ProductVersion", "4.2.0.0"
+            VALUE "ProductVersion", "4.2.1.0"
             VALUE "LegalCopyright", "BSD 3-Clause. Tweak set derived from GameTCP3 (c) 2022 Charles McDonald."
         END
     END

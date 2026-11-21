@@ -12,6 +12,53 @@ The tweak set itself belongs to upstream. It was transcribed from `GameTCP3.vb`
 at upstream version **3.0.0**, and upstream's own history is summarised near the
 bottom so the two toolkits can be compared and merged later.
 
+## [4.2.1] - 2026-11-21
+
+Fixes the values that looked as if they were never written, and stops an apply
+from running the destructive TCP/IP reset. The tweak set and the target values
+are unchanged from 4.2.0.
+
+### Fixed
+
+- An apply no longer resets the stack out from under its own writes.
+  `netsh int ip reset` overwrites `Tcpip\Parameters` and deletes the per-interface
+  values (its own reset log shows `DontAddDefaultGateway` being removed) as well
+  as `NetbiosOptions`, so when the reset ran after the writes it removed what had
+  just been written: the interface sections, the NetBT interface section and most
+  of the `Tcpip` values reverted immediately. The global TCP settings now run
+  before the writes, and the destructive resets are not part of an apply at all
+  (see **Changed**).
+- The confirmations, the Activity log and the CLI output now state what runs, and
+  the per-section results report the read-back outcome.
+
+### Changed
+
+- `apply` — `Apply Selected`, `ZGT Performance Setup` and `GamerTCP apply` — no
+  longer runs the destructive stack resets. Microsoft documents
+  `netsh int ip reset` as equivalent to removing and reinstalling TCP/IP, and it
+  deletes the per-interface keys, so an apply was discarding static addresses,
+  DHCP options and the per-interface tweaks as a side effect. The 23 commands are
+  split into the 18 global TCP settings and cache flushes that an apply
+  re-applies, and the 5 resets (`int tcp reset`, `int ipv4 reset`, `int ipv6
+  reset`, `int ip reset`, `winsock reset catalog`) that only run from **Reset
+  Network Stack**, `GamerTCP reset`, or `apply --with-reset`. The log says which
+  of the two ran and that the reset was skipped, the reset action warns that it
+  discards interface keys and static IP configuration, and `--no-reset` now skips
+  the global TCP settings as well.
+
+### Added
+
+- Every apply now ends by reading all the values it wrote back from the registry;
+  any that no longer hold the written value are reported as `FAILED` with what
+  was found instead, and counted as failures rather than changes. This is what
+  would have caught the reset ordering above on the first run, and it catches any
+  other silent revert (a service, a policy) the same way. Both the GUI log and
+  `GamerTCP apply` do it.
+- `build.sh` cross-builds and packages the release on Linux with Zig and a
+  MinGW-w64 `windres`, mirroring `build.bat` + `dist.bat`: both executables, the
+  changelog/compiled version check that `selftest` performs on Windows, and the
+  four files in `dist/`.
+
 ## [4.2.0] - 2026-11-15
 
 Version bump for the per-value current readings and the refresh action. The tweak

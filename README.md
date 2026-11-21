@@ -4,7 +4,7 @@ A self-contained native C++ (Win32) reimplementation of the **GameTCP3** Windows
 network optimization toolkit, with both a **CLI** and a **GUI** in a single
 dependency-free `GamerTCP.exe`.
 
-The current release is **4.2.0** (2026-11-15) — the fourth generation of the
+The current release is **4.2.1** (2026-11-21) — the fourth generation of the
 tool, following GameTCP3. See [`CHANGES.md`](CHANGES.md) for the full history and
 for how upstream changes are tracked.
 
@@ -19,7 +19,7 @@ runtime, no external libraries and no installer.
 | --- | --- |
 | Sections | 15 (TCP/IP, interfaces, DNS cache, service provider, LanmanServer, LanmanWorkstation, Multimedia, Games task profile, Memory Management, MSMQ, NetBT, NetBT interfaces, Internet settings, Policies, Miscellaneous) |
 | Registry values | 106 (97 fixed values plus 8 per network interface and 1 per NetBT interface) |
-| Network stack reset | The original 23 `netsh` commands (TCP/IPv4/IPv6 reset, Winsock catalog, ARP cache, global TCP parameters) |
+| Network stack commands | The original 23 `netsh` commands, split in two: 18 global TCP settings and cache flushes that `apply` runs, and 5 destructive resets (`netsh int tcp/ipv4/ipv6/ip reset`, `netsh winsock reset catalog`) that only `reset` runs |
 | Teredo | Show state, disable, default and enterprise-client modes |
 | Safety | Automatic timestamped backup before writes, `preview`/dry-run, `status` diff, `restore`, pre-restore backup |
 
@@ -96,14 +96,21 @@ installer is rebuilt too so its embedded payload stays current. The source
 archive rebuilds with `build.bat` on any machine with the Visual Studio C++
 tools or MinGW-w64.
 
+On Linux, `./build.sh` does the whole run with Zig and a MinGW-w64 `windres`: it
+compiles the resources and both executables, checks the changelog version
+against the compiled one (what `selftest` does on Windows) and writes the same
+`GamerTCP-<version>-*` files to `dist/`. `--no-dist` stops after the executables,
+`--no-installer` builds only `GamerTCP.exe`, `--clean` starts from scratch, and
+`ZIG=`, `WINDRES=` and `RCPP=` point it at tools kept elsewhere.
+
 ## GUI
 
 Run `GamerTCP.exe` with no arguments (or `GamerTCP.exe --gui`).
 
 * **ZGT Performance Setup** in the header is the one-click path: it ticks every
   recommended value (106 across 15 sections), takes the usual timestamped
-  backup, applies them all and resets the network stack, after a single
-  confirmation. It needs elevation, and the backup undoes it through Restore.
+  backup, re-applies the global TCP settings and then writes them all, after a
+  single confirmation. It does not run the destructive stack reset. It needs elevation, and the backup undoes it through Restore.
 * **Power plan** in the header (bolt button) reads the active Windows power
   scheme and lists every plan Windows offers with its description. Selecting a
   plan and pressing **Apply** switches Windows to it immediately, without
@@ -134,15 +141,22 @@ Run `GamerTCP.exe` with no arguments (or `GamerTCP.exe --gui`).
   list (`Select All` / `Select None` cover everything). A section's box shows
   ticked only when all of its values are ticked.
 * `Apply Selected`, `Preview`, `Scan` and `Backup` act only on the ticked values.
-* **Apply Selected** backs up every current value of the ticked items, writes
-  them, then resets the network stack — with a confirmation first.
+* **Apply Selected** backs up every current value of the ticked items, re-applies
+  the 18 global TCP settings, then writes them — with a confirmation first. It
+  never runs `netsh int ip reset` or its neighbours: those delete interface keys
+  and static IP configuration. When the writes are done every written value is
+  read back, and one that no longer holds the written value is reported as
+  `FAILED` with what was found instead of being counted as changed.
 * **Preview (dry run)** shows exactly which values would change without writing.
 * **Scan Current State** prints current values next to their targets.
 * **Refresh Values** (F5) re-reads every value, including the per-interface ones,
   and rewrites the tree, so the current values can be inspected at any time
   without applying or scanning first.
 * **Backup… / Restore…** use file dialogs and the same backup format as the CLI.
-* **Reset Network Stack** and **Teredo…** wrap the `netsh` operations.
+* **Reset Network Stack** runs the 5 destructive resets after a warning: it is
+  documented as equivalent to removing and reinstalling TCP/IP, so static
+  addresses, DHCP options and per-interface tweaks are lost. **Teredo…** wraps the
+  Teredo `netsh` operations.
 * **About…** shows the version, copyright and the full BSD 3-Clause licence text.
 * If started without elevation the window is read-only and offers
   **Restart as administrator**.
@@ -156,13 +170,14 @@ activity log colour-codes changes, failures and summaries.
 GamerTCP <command> [options]
 
 Commands
-  apply      Apply the registry tweaks and reset the network stack
+  apply      Apply the registry tweaks after the global TCP settings
+             (never the destructive stack reset)
   preview    Show what apply would change without writing anything
   status     Show current values against their targets
   list       List every section and registry value in the toolkit
   backup     Save current values to a backup file
   restore    Restore values from a backup file
-  reset      Reset the TCP/IP stack and Winsock catalog with netsh
+  reset      Reset the TCP/IP stack and Winsock catalog (destructive)
   teredo     Show or change the Teredo tunneling state
   selftest   Run built-in self checks (read only)
 
@@ -170,7 +185,9 @@ Options
   -s, --section <id>[,<id>]  Limit to these sections (repeatable)
   -y, --yes                  Do not prompt for confirmation
   -n, --dry-run              Preview without writing (apply, reset)
-      --no-reset             Skip the network stack reset
+      --no-reset             Skip the global TCP settings as well
+      --with-reset           Also reset the TCP/IP stack first; that discards
+                             interface keys and static IP configuration
       --no-backup            Skip the automatic backup
       --all-values           status: also show values that already match
   -o, --backup-file <path>   Backup destination
@@ -243,6 +260,12 @@ CHANGES.md          version history and upstream sync notes
 
 * A reboot is recommended after `apply` or `reset`; some values only take effect
   at boot.
+* `apply` only runs the non-destructive `netsh` commands (global TCP parameters
+  and cache flushes). The resets — `netsh int tcp reset`, `int ipv4/ipv6 reset`,
+  `int ip reset` and `winsock reset catalog` — are opt-in through `GamerTCP reset`
+  or `apply --with-reset`, because Microsoft documents `int ip reset` as
+  equivalent to removing and reinstalling TCP/IP and it deletes the per-interface
+  keys, so static addresses and DHCP settings are lost.
 * `netsh int tcp reset` and neighbours reset can drop connections briefly.
 * Individual tweaks can fail on modern Windows builds (for example removed or
   deprecated TCP parameters); failures are reported per value and do not abort

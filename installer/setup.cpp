@@ -19,7 +19,7 @@
 namespace {
 
 const wchar_t* const kAppName = L"GamerTCP 4";
-const wchar_t* const kDisplayVersion = L"4.2.0";
+const wchar_t* const kDisplayVersion = L"4.2.1";
 const wchar_t* const kPublisher = L"GamerTCP contributors";
 const wchar_t* const kUninstallKey =
     L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\GamerTCP4";
